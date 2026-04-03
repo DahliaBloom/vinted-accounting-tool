@@ -1,0 +1,16 @@
+[theme]
+backgroundColor = "#182034"
+textColor = "#EEF0F7"
+font = "sans serif"
+base = "dark"
+
+secondaryBackgroundColor = "#202A44"
+
+primaryColor = "#637AB6"
+borderColor = "#2D3D5E"
+
+[runner]
+magicEnabled = false
+
+[client]
+toolbarMode = "minimal"
