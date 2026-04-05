@@ -1,3 +1,4 @@
+import os
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -5,6 +6,8 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import date, timedelta
 from pathlib import Path
+from dotenv import load_dotenv
+import streamlit_authenticator as stauth
 
 from utils import (
     load_data, save_data, next_sku, next_order_id,
@@ -46,6 +49,44 @@ STATUS_COLORS = {
     "Sold":        "#22C55E",
     "Cancelled":   "#6B7280",
 }
+
+# ── Authentication setup ───────────────────────────────────────────────────────
+load_dotenv()
+_auth_user       = os.getenv("APP_USERNAME", "admin")
+_auth_pass       = os.getenv("APP_PASSWORD", "changeme")
+_auth_name       = os.getenv("APP_FIRST_NAME", "Admin")
+_auth_cookie_key = os.getenv("APP_COOKIE_KEY", "fallback-insecure-key")
+
+authenticator = stauth.Authenticate(
+    credentials={
+        "usernames": {
+            _auth_user: {
+                "first_name": _auth_name,
+                "last_name":  "",
+                "email":      "",
+                "password":   _auth_pass,
+            }
+        }
+    },
+    cookie_name="vinted_tracker_session",
+    cookie_key=_auth_cookie_key,
+    cookie_expiry_days=30,
+)
+
+# ── Login gate — stop here if not authenticated ────────────────────────────────
+try:
+    authenticator.login(
+        fields={"Form name": "Vinted Tracker", "Login": "Sign in"},
+    )
+except Exception as _auth_exc:
+    st.error(str(_auth_exc))
+
+_auth_status = st.session_state.get("authentication_status")
+if _auth_status is False:
+    st.error(":material/lock: Incorrect username or password.")
+    st.stop()
+elif _auth_status is None:
+    st.stop()
 
 # ── Session-state initialisation ──────────────────────────────────────────────
 if "items_df" not in st.session_state:
@@ -194,82 +235,19 @@ footer { visibility: hidden; }
 </style>""")
 
 
-# ── Sidebar ───────────────────────────────────────────────────────────────────
-with st.sidebar:
-    st.markdown("## :material/shopping_bag_speed: Vinted Tracker")
-
-    _it    = st.session_state.items_df
-    n_items  = len(_it)
-    n_orders = len(st.session_state.orders_df)
-
-    with st.container(border=True):
-        st.caption("Portfolio overview")
-        pc1, pc2 = st.columns(2)
-        pc1.metric("Items",  n_items)
-        pc2.metric("Orders", n_orders)
-
-        if n_items > 0:
-            counts_d = {s: int(_it["status"].value_counts().get(s, 0)) for s in STATUS_OPTIONS}
-            fig_sb = go.Figure(go.Pie(
-                values=list(counts_d.values()),
-                labels=list(counts_d.keys()),
-                hole=0.62,
-                marker=dict(
-                    colors=[STATUS_COLORS[s] for s in STATUS_OPTIONS],
-                    line=dict(color="rgba(0,0,0,0)", width=0),
-                ),
-                textinfo="none",
-                hovertemplate="%{label}: %{value}<extra></extra>",
-            ))
-            fig_sb.update_layout(
-                height=120, margin=dict(l=0, r=0, t=4, b=0),
-                showlegend=False,
-                paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="rgba(0,0,0,0)",
-            )
-            st.plotly_chart(fig_sb, width="stretch")
-
-        for status, (bcolor, icon) in STATUS_BADGE.items():
-            c = int(_it["status"].value_counts().get(status, 0)) if n_items > 0 else 0
-            st.badge(f"{status}  {c}", color=bcolor, icon=icon)
-
-        if n_items > 0:
-            sv_df    = coerce_items(_it)
-            active_v = sv_df[~sv_df["status"].isin(["Sold", "Cancelled"])]["purchase_price"].sum()
-            st.metric("Stock value", _fm(active_v))
-
-    with st.expander(":material/tune: Manage lookup values"):
-        cat = st.selectbox("Category", CATEGORY_LABELS, key="cfg_cat")
-        nc1, nc2 = st.columns([3, 1], vertical_alignment="bottom")
-        new_val = nc1.text_input(
-            "New value", key="cfg_val",
-            label_visibility="collapsed", placeholder="Add new value…",
-        )
-        if nc2.button(":material/add:", key="cfg_add", width="stretch") and new_val.strip():
-            st.session_state.config_df = pd.concat(
-                [st.session_state.config_df,
-                 pd.DataFrame([{"category": cat, "value": new_val.strip()}])],
-                ignore_index=True,
-            )
-            save_data(st.session_state.config_df, CONFIG_PATH)
-            st.rerun()
-        cfg = st.session_state.config_df
-        filt_cfg = cfg[cfg["category"] == cat] if not cfg.empty else cfg
-        if not filt_cfg.empty:
-            for idx, r in filt_cfg.iterrows():
-                vc1, vc2 = st.columns([4, 1])
-                vc1.markdown(f"`{r['value']}`")
-                if vc2.button(":material/close:", key=f"del_{idx}", width="stretch"):
-                    st.session_state.config_df = cfg.drop(idx).reset_index(drop=True)
-                    save_data(st.session_state.config_df, CONFIG_PATH)
-                    st.rerun()
-
+# ── Logout bar ────────────────────────────────────────────────────────────────
+_lb1, _lb2 = st.columns([9, 1])
+_lb1.caption(
+    f":material/person: {st.session_state.get('name') or _auth_name}"
+)
+with _lb2:
+    authenticator.logout("Sign out", "main", key="nav_logout")
 
 # ── Main tabs ─────────────────────────────────────────────────────────────────
-tab_inv, tab_add, tab_order, tab_fin, tab_ins = st.tabs(
-    [":material/inventory_2: Inventory",    ":material/add_circle: Add Item",
-     ":material/shopping_cart: Add Order",  ":material/euro: Finance",
-     ":material/insights: Insights"],
+tab_inv, tab_add, tab_order, tab_fin, tab_ins, tab_cfg = st.tabs(
+    [":material/inventory_2: Inventory",   ":material/add_circle: Add Item",
+     ":material/shopping_cart: Add Order", ":material/euro: Finance",
+     ":material/insights: Insights",       ":material/tune: Lookup Values"],
     on_change="rerun", key="main_tabs",
 )
 
@@ -1358,3 +1336,74 @@ with tab_ins:
                         )
         else:
             st.info("Not enough data to determine an ideal item profile.")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# TAB 6 — LOOKUP VALUES
+# ═════════════════════════════════════════════════════════════════════════════
+with tab_cfg:
+    st.markdown("### :material/tune: Lookup Values")
+    st.caption(
+        "Manage the dropdown options available when adding items and orders. "
+        "Changes take effect immediately."
+    )
+
+    cfg_df = st.session_state.config_df
+
+    # ── Add new value ─────────────────────────────────────────────────────
+    with st.container(border=True):
+        _accent(TEAL)
+        st.caption("Add a new value")
+        fa1, fa2, fa3 = st.columns([2, 3, 1], vertical_alignment="bottom")
+        add_cat = fa1.selectbox("Category", CATEGORY_LABELS, key="cfg_add_cat")
+        add_val = fa2.text_input(
+            "Value", key="cfg_add_val",
+            label_visibility="collapsed",
+            placeholder=f"New {add_cat} value…",
+        )
+        if fa3.button("Add", type="primary", icon=":material/add:", key="cfg_add_btn", width="stretch"):
+            if add_val.strip():
+                # prevent duplicates within the same category
+                existing = get_config_options(cfg_df, add_cat)
+                if add_val.strip() in existing:
+                    st.warning(f"**{add_val.strip()}** already exists in {add_cat}.")
+                else:
+                    st.session_state.config_df = pd.concat(
+                        [cfg_df, pd.DataFrame([{"category": add_cat, "value": add_val.strip()}])],
+                        ignore_index=True,
+                    )
+                    save_data(st.session_state.config_df, CONFIG_PATH)
+                    st.rerun()
+            else:
+                st.warning("Enter a value before clicking Add.")
+
+    st.markdown("")  # spacer
+
+    # ── Current values — one card per category ────────────────────────────
+    cat_cols = st.columns(len(CATEGORY_LABELS), gap="small")
+    for col_obj, cat in zip(cat_cols, CATEGORY_LABELS):
+        with col_obj:
+            with st.container(border=True):
+                _accent(ACCENT)
+                st.caption(cat.title())
+                cfg_df = st.session_state.config_df  # re-read after any delete
+                cat_vals = get_config_options(cfg_df, cat)
+                if not cat_vals:
+                    st.markdown("*No values yet*")
+                else:
+                    for val in cat_vals:
+                        # find the row index so we can delete it
+                        mask = (cfg_df["category"] == cat) & (cfg_df["value"] == val)
+                        row_idx = cfg_df[mask].index
+                        v1, v2 = st.columns([5, 1], vertical_alignment="center")
+                        v1.markdown(f"`{val}`")
+                        if row_idx.size > 0:
+                            if v2.button(
+                                ":material/close:", key=f"del_{cat}_{val}",
+                                width="stretch",
+                            ):
+                                st.session_state.config_df = (
+                                    cfg_df.drop(row_idx).reset_index(drop=True)
+                                )
+                                save_data(st.session_state.config_df, CONFIG_PATH)
+                                st.rerun()
