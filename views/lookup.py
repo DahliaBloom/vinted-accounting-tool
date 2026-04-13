@@ -102,7 +102,8 @@ def render(storage: object) -> None:
 
         if not st.session_state.get("_confirm_clear"):
             if st.button(
-                ":material/delete_forever: Clear All Data",
+                "Clear All Data",
+                icon=":material/delete_forever:",
                 type="secondary",
                 key="clear_data_btn",
             ):

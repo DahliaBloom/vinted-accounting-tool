@@ -23,7 +23,7 @@ from utils import (
     coerce_overhead,
     df_from_storage,
 )
-from views import add_item, add_order, finance, insights, lookup, warehouse
+from views import finance, insights, lookup, warehouse
 
 # ── Page configuration ─────────────────────────────────────────────────────────
 st.set_page_config(
@@ -48,11 +48,9 @@ if "items_df" not in st.session_state:
 inject_custom_css()
 
 # ── Main tabs ──────────────────────────────────────────────────────────────────
-tab_inv, tab_add, tab_order, tab_fin, tab_ins, tab_cfg = st.tabs(
+tab_inv, tab_fin, tab_ins, tab_cfg = st.tabs(
     [
         ":material/warehouse: Warehouse",
-        ":material/add_circle: Add Item",
-        ":material/shopping_cart: Add Order",
         ":material/euro: Finance",
         ":material/insights: Insights",
         ":material/tune: Lookup",
@@ -63,12 +61,6 @@ tab_inv, tab_add, tab_order, tab_fin, tab_ins, tab_cfg = st.tabs(
 
 with tab_inv:
     warehouse.render(_storage)
-
-with tab_add:
-    add_item.render(_storage)
-
-with tab_order:
-    add_order.render(_storage)
 
 with tab_fin:
     finance.render(_storage)
