@@ -1,22 +1,20 @@
-import os
 import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import date, timedelta
-from pathlib import Path
-from dotenv import load_dotenv
-import streamlit_authenticator as stauth
+from streamlit_extras.dataframe_explorer import dataframe_explorer
+from streamlit_extras.local_storage_manager import local_storage_manager
 
 from utils import (
-    load_data, save_data, next_sku, next_order_id,
+    df_to_storage, df_from_storage, next_sku, next_order_id,
     compute_derived, apply_automation, get_config_options,
     explode_pipe_col, coerce_items, coerce_orders, coerce_overhead,
     sort_items_default,
     ITEMS_SCHEMA, ORDERS_SCHEMA, OVERHEAD_SCHEMA, CONFIG_SCHEMA,
     STATUS_OPTIONS, GRADE_OPTIONS, DATE_COLS_ITEMS,
-    STATUS_SORT, STATUS_BADGE, CATEGORY_LABELS,
+    STATUS_SORT, CATEGORY_LABELS, STATUS_BADGE
 )
 
 # ── Page configuration ────────────────────────────────────────────────────────
@@ -26,11 +24,10 @@ st.set_page_config(
     page_icon=":material/shopping_bag_speed:",
 )
 
-DATA_DIR = Path("data")
-ITEMS_PATH = str(DATA_DIR / "items.csv")
-ORDERS_PATH = str(DATA_DIR / "orders.csv")
-OVERHEAD_PATH = str(DATA_DIR / "overhead.csv")
-CONFIG_PATH = str(DATA_DIR / "config.csv")
+ITEMS_KEY    = "items"
+ORDERS_KEY   = "orders"
+OVERHEAD_KEY = "overhead"
+CONFIG_KEY   = "config"
 
 # ── Colour palette ────────────────────────────────────────────────────────────
 ACCENT = "#637AB6"
@@ -50,51 +47,17 @@ STATUS_COLORS = {
     "Cancelled":   "#6B7280",
 }
 
-# ── Authentication setup ───────────────────────────────────────────────────────
-load_dotenv()
-_auth_user       = os.getenv("APP_USERNAME", "admin")
-_auth_pass       = os.getenv("APP_PASSWORD", "changeme")
-_auth_name       = os.getenv("APP_FIRST_NAME", "Admin")
-_auth_cookie_key = os.getenv("APP_COOKIE_KEY", "fallback-insecure-key")
-
-authenticator = stauth.Authenticate(
-    credentials={
-        "usernames": {
-            _auth_user: {
-                "first_name": _auth_name,
-                "last_name":  "",
-                "email":      "",
-                "password":   _auth_pass,
-            }
-        }
-    },
-    cookie_name="vinted_tracker_session",
-    cookie_key=_auth_cookie_key,
-    cookie_expiry_days=30,
-)
-
-# ── Login gate — stop here if not authenticated ────────────────────────────────
-try:
-    authenticator.login(
-        fields={"Form name": "Vinted Tracker", "Login": "Sign in"},
-    )
-except Exception as _auth_exc:
-    st.error(str(_auth_exc))
-
-_auth_status = st.session_state.get("authentication_status")
-if _auth_status is False:
-    st.error(":material/lock: Incorrect username or password.")
-    st.stop()
-elif _auth_status is None:
+# ── localStorage manager ──────────────────────────────────────────────────────
+_storage = local_storage_manager(key="vinted_storage")
+if not _storage.ready():
     st.stop()
 
 # ── Session-state initialisation ──────────────────────────────────────────────
 if "items_df" not in st.session_state:
-    DATA_DIR.mkdir(exist_ok=True)
-    st.session_state.items_df    = coerce_items(load_data(ITEMS_PATH,    ITEMS_SCHEMA))
-    st.session_state.orders_df   = coerce_orders(load_data(ORDERS_PATH,   ORDERS_SCHEMA))
-    st.session_state.overhead_df = coerce_overhead(load_data(OVERHEAD_PATH, OVERHEAD_SCHEMA))
-    st.session_state.config_df   = load_data(CONFIG_PATH, CONFIG_SCHEMA)
+    st.session_state.items_df    = coerce_items(df_from_storage(_storage.get(ITEMS_KEY), ITEMS_SCHEMA))
+    st.session_state.orders_df   = coerce_orders(df_from_storage(_storage.get(ORDERS_KEY), ORDERS_SCHEMA))
+    st.session_state.overhead_df = coerce_overhead(df_from_storage(_storage.get(OVERHEAD_KEY), OVERHEAD_SCHEMA))
+    st.session_state.config_df   = df_from_storage(_storage.get(CONFIG_KEY), CONFIG_SCHEMA)
 
 # ── Global date helpers (computed once, used across all tabs) ─────────────────
 _today      = date.today()
@@ -234,26 +197,16 @@ button[data-baseweb="tab"]:hover { background: rgba(99,122,182,0.08) !important;
 footer { visibility: hidden; }
 </style>""")
 
-
-# ── Logout bar ────────────────────────────────────────────────────────────────
-_lb1, _lb2 = st.columns([9, 1])
-_lb1.caption(
-    f":material/person: {st.session_state.get('name') or _auth_name}"
-)
-with _lb2:
-    authenticator.logout("Sign out", "main", key="nav_logout")
-
 # ── Main tabs ─────────────────────────────────────────────────────────────────
-tab_inv, tab_add, tab_order, tab_fin, tab_ins, tab_cfg = st.tabs(
-    [":material/inventory_2: Inventory",   ":material/add_circle: Add Item",
-     ":material/shopping_cart: Add Order", ":material/euro: Finance",
-     ":material/insights: Insights",       ":material/tune: Lookup Values"],
+tab_inv, tab_fin, tab_ins = st.tabs(
+    [":material/warehouse: Warehouse",  ":material/euro: Finance",
+     ":material/insights: Insights"],
     on_change="rerun", key="main_tabs",
 )
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# TAB 1 — INVENTORY
+# TAB 1 — WAREHOUSE
 # ═════════════════════════════════════════════════════════════════════════════
 with tab_inv:
     _items = st.session_state.items_df
@@ -272,13 +225,11 @@ with tab_inv:
     else:
         # Status summary badges
         _cnts  = _items["status"].value_counts()
-        bcols  = st.columns(len(STATUS_BADGE), gap="small")
-        for i, (status, (btype, icon)) in enumerate(STATUS_BADGE.items()):
-            with bcols[i]:
-                st.badge(f"{status}  {int(_cnts.get(status, 0))}", color=btype, icon=icon)
+        _cnts["All Items"] = _cnts.sum()
+        tabs = [f"{icon} {status}  {int(_cnts.get(status, 0))}" for (status, (_, icon)) in STATUS_BADGE.items()]
 
-        sub_all, sub_inv, sub_closed, sub_orders = st.tabs(
-            ["All Items", "Active Inventory", "Closed", "Orders"],
+        sub_all, in_shipping, pending, listed, sold, cancelled, sub_orders = st.tabs(
+            [*tabs, ":material/package_2: Orders"],
             on_change="rerun", key="inv_subtabs",
         )
 
@@ -289,38 +240,9 @@ with tab_inv:
                 return
 
             display = compute_derived(coerce_items(subset_df))
-
-            # Compact sort + search row
-            sc1, sc2, sc3 = st.columns([3, 2, 2], gap="small")
-            sortable = [c for c in display.columns if c != "days_tracker"]
-            with sc1:
-                sort_col = st.selectbox(
-                    "Sort by", sortable,
-                    index=sortable.index("status") if "status" in sortable else 0,
-                    key=f"sort_{editor_key}",
-                )
-            with sc2:
-                sort_dir = st.radio(
-                    "Direction", ["↑ Asc", "↓ Desc"],
-                    key=f"dir_{editor_key}", horizontal=True,
-                    label_visibility="collapsed",
-                )
-            with sc3:
-                search_term = st.text_input(
-                    "Filter", placeholder="🔍 Filter rows…",
-                    key=f"search_{editor_key}", label_visibility="collapsed",
-                )
-
-            asc = sort_dir == "↑ Asc"
-            if sort_col == "status":
-                display["_so"]  = display["status"].map(STATUS_SORT).fillna(5)
-                display["_oid"] = display["order_id"].replace(-1, 999_999)
-                display = display.sort_values(["_so", "_oid", "sku"], ascending=[asc, asc, asc])
-                display.drop(columns=["_so", "_oid"], inplace=True)
-            else:
-                display = display.sort_values(sort_col, ascending=asc, na_position="last")
             display.reset_index(drop=True, inplace=True)
 
+            """
             # Mini summary
             _sub_c = coerce_items(subset_df)
             _sub_sold = _sub_c[_sub_c["status"] == "Sold"]
@@ -330,23 +252,12 @@ with tab_inv:
             )
             with st.container(border=True):
                 _accent(ACCENT)
-                sm1, sm2, sm3, sm4 = st.columns(4)
-                sm1.metric("Items",       len(subset_df))
+                sm2, sm3, sm4 = st.columns(3)
                 sm2.metric("Invested",    _fm(_sub_c["purchase_price"].sum()))
                 sm3.metric("Avg Purchase",_fm(_sub_c["purchase_price"].mean()))
                 sm4.metric("Avg ROI",     _fp(_avg_roi_sub))
-
-            # Search → read-only mode
-            if search_term.strip():
-                mask = display.astype(str).apply(
-                    lambda col: col.str.contains(search_term.strip(), case=False, na=False)
-                ).any(axis=1)
-                fv = display[mask].copy()
-                st.caption(f"Showing {len(fv)} of {len(display)} rows — read-only while filtering")
-                for dc in DATE_COLS_ITEMS:
-                    fv[dc] = pd.to_datetime(fv[dc], errors="coerce")
-                st.dataframe(fv, width="stretch", hide_index=True)
-                return
+                
+            """
 
             for dc in DATE_COLS_ITEMS:
                 display[dc] = pd.to_datetime(display[dc], errors="coerce")
@@ -359,7 +270,7 @@ with tab_inv:
             ]
 
             edited = st.data_editor(
-                display, key=editor_key, hide_index=True,
+                dataframe_explorer(display, case=False), key=editor_key, hide_index=True,
                 num_rows="dynamic", width="stretch",
                 column_order=col_order,
                 column_config={
@@ -415,44 +326,11 @@ with tab_inv:
                 )
             ):
                 st.session_state.items_df = updated
-                save_data(updated, ITEMS_PATH)
+                _storage[ITEMS_KEY] = df_to_storage(updated)
                 st.rerun()
 
         # ── All Items ─────────────────────────────────────────────────────
         with sub_all:
-            ic1, ic2 = st.columns(2)
-
-            # Status donut
-            counts_inv = {s: int(_items["status"].value_counts().get(s, 0)) for s in STATUS_OPTIONS}
-            fig_d = go.Figure(go.Pie(
-                values=list(counts_inv.values()),
-                labels=list(counts_inv.keys()),
-                hole=0.55,
-                marker=dict(colors=[STATUS_COLORS[s] for s in STATUS_OPTIONS]),
-                textinfo="label+value",
-                textfont=dict(size=10),
-                hovertemplate="%{label}: %{value}<extra></extra>",
-            ))
-            fig_d.update_layout(title="Items by Status", showlegend=False)
-            ic1.plotly_chart(_style_fig(fig_d, height=240), width="stretch")
-
-            # Brand bar
-            brand_ex = explode_pipe_col(_items, "brand")
-            brand_ex = brand_ex[brand_ex["brand"].astype(str).ne("") & brand_ex["brand"].astype(str).ne("nan")]
-            if not brand_ex.empty:
-                brand_cnt = brand_ex.groupby("brand").size().sort_values(ascending=True).tail(10)
-                fig_br = go.Figure()
-                fig_br.add_bar(
-                    y=brand_cnt.index, x=brand_cnt.values, orientation="h",
-                    marker_color=ACCENT,
-                    hovertemplate="%{y}: %{x} items<extra></extra>",
-                )
-                fig_br.update_layout(title="Item Count by Brand (Top 10)",
-                                     yaxis_title="", xaxis_title="Items")
-                ic2.plotly_chart(_style_fig(fig_br, height=240, hovermode="closest"), width="stretch")
-            else:
-                ic2.info("No brand data yet. Add brands via the sidebar lookup manager.")
-
             _inventory_editor(sort_items_default(_items), "inv_all")
 
         with sub_inv:
@@ -573,7 +451,7 @@ with tab_add:
                 [st.session_state.items_df, pd.DataFrame([row])], ignore_index=True,
             ))
             st.session_state.items_df = new_df
-            save_data(new_df, ITEMS_PATH)
+            _storage[ITEMS_KEY] = df_to_storage(new_df)
             st.success(f":material/check_circle: Item SKU {int(ai_sku)} added.")
             st.rerun()
 
@@ -654,12 +532,12 @@ with tab_order:
              }])],
             ignore_index=True,
         ))
-        save_data(st.session_state.orders_df, ORDERS_PATH)
+        _storage[ORDERS_KEY] = df_to_storage(st.session_state.orders_df)
 
         st.session_state.items_df = coerce_items(pd.concat(
             [st.session_state.items_df, pd.DataFrame(new_items)], ignore_index=True,
         ))
-        save_data(st.session_state.items_df, ITEMS_PATH)
+        _storage[ITEMS_KEY] = df_to_storage(st.session_state.items_df)
         st.success(
             f":material/check_circle: Order #{oid} created — "
             f"{int(ord_qty)} items (SKU {sku_list[0]}–{sku_list[-1]})."
@@ -1085,7 +963,7 @@ with tab_fin:
                                 "description": oh_desc}])],
                 ignore_index=True,
             )
-            save_data(st.session_state.overhead_df, OVERHEAD_PATH)
+            _storage[OVERHEAD_KEY] = df_to_storage(st.session_state.overhead_df)
             st.rerun()
 
         if not st.session_state.overhead_df.empty:
@@ -1124,7 +1002,7 @@ with tab_fin:
                 save_oh["amount"]      = pd.to_numeric(save_oh["amount"],    errors="coerce").fillna(0.0)
                 save_oh["description"] = save_oh["description"].fillna("").astype(str)
                 st.session_state.overhead_df = save_oh
-                save_data(save_oh, OVERHEAD_PATH)
+                _storage[OVERHEAD_KEY] = df_to_storage(save_oh)
                 st.rerun()
 
 
@@ -1335,6 +1213,39 @@ with tab_ins:
                             f"{_fm(best['sale_price'])} revenue — SKU {int(best['sku'])}"
                         )
         else:
+            ic1, ic2 = st.columns(2)
+
+            # Status donut
+            counts_inv = {s: int(_items["status"].value_counts().get(s, 0)) for s in STATUS_OPTIONS}
+            fig_d = go.Figure(go.Pie(
+                values=list(counts_inv.values()),
+                labels=list(counts_inv.keys()),
+                hole=0.55,
+                marker=dict(colors=[STATUS_COLORS[s] for s in STATUS_OPTIONS]),
+                textinfo="label+value",
+                textfont=dict(size=10),
+                hovertemplate="%{label}: %{value}<extra></extra>",
+            ))
+            fig_d.update_layout(title="Items by Status", showlegend=False)
+            ic1.plotly_chart(_style_fig(fig_d, height=240), width="stretch")
+
+            # Brand bar
+            brand_ex = explode_pipe_col(_items, "brand")
+            brand_ex = brand_ex[brand_ex["brand"].astype(str).ne("") & brand_ex["brand"].astype(str).ne("nan")]
+            if not brand_ex.empty:
+                brand_cnt = brand_ex.groupby("brand").size().sort_values(ascending=True).tail(10)
+                fig_br = go.Figure()
+                fig_br.add_bar(
+                    y=brand_cnt.index, x=brand_cnt.values, orientation="h",
+                    marker_color=ACCENT,
+                    hovertemplate="%{y}: %{x} items<extra></extra>",
+                )
+                fig_br.update_layout(title="Item Count by Brand (Top 10)",
+                                     yaxis_title="", xaxis_title="Items")
+                ic2.plotly_chart(_style_fig(fig_br, height=240, hovermode="closest"), width="stretch")
+            else:
+                ic2.info("No brand data yet. Add brands via the sidebar lookup manager.")
+            
             st.info("Not enough data to determine an ideal item profile.")
 
 
@@ -1372,7 +1283,7 @@ with tab_cfg:
                         [cfg_df, pd.DataFrame([{"category": add_cat, "value": add_val.strip()}])],
                         ignore_index=True,
                     )
-                    save_data(st.session_state.config_df, CONFIG_PATH)
+                    _storage[CONFIG_KEY] = df_to_storage(st.session_state.config_df)
                     st.rerun()
             else:
                 st.warning("Enter a value before clicking Add.")
@@ -1405,5 +1316,5 @@ with tab_cfg:
                                 st.session_state.config_df = (
                                     cfg_df.drop(row_idx).reset_index(drop=True)
                                 )
-                                save_data(st.session_state.config_df, CONFIG_PATH)
+                                _storage[CONFIG_KEY] = df_to_storage(st.session_state.config_df)
                                 st.rerun()

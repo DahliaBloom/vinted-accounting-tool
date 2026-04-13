@@ -2,7 +2,6 @@
 
 import pandas as pd
 import numpy as np
-from pathlib import Path
 from datetime import date
 
 # ---------------------------------------------------------------------------
@@ -33,8 +32,9 @@ STATUS_SORT = {
 }
 
 STATUS_BADGE = {
+    "All Items": ("blue",    ":material/inventory_2:"),
     "In Shipping": ("blue",    ":material/local_shipping:"),
-    "Pending":     ("orange",  ":material/pending:"),
+    "Pending":     ("orange",  ":material/deployed_code_history:"),
     "Listed":      ("primary", ":material/sell:"),
     "Sold":        ("green",   ":material/check_circle:"),
     "Cancelled":   ("gray",    ":material/cancel:"),
@@ -43,37 +43,28 @@ STATUS_BADGE = {
 CATEGORY_LABELS = ["brand", "type", "style", "origin", "supplier"]
 
 # ---------------------------------------------------------------------------
-# Load / Save
+# Load / Save (localStorage)
 # ---------------------------------------------------------------------------
 
 
-def load_data(path: str, schema: list[str]) -> pd.DataFrame:
-    """Read a CSV into a DataFrame.  If the file is missing or empty, return
-    an empty DataFrame with *schema* columns and persist it to *path*."""
-    p = Path(path)
-    if p.exists():
-        try:
-            df = pd.read_csv(p, dtype=str, keep_default_na=False)
-            if not df.empty:
-                for col in schema:
-                    if col not in df.columns:
-                        df[col] = ""
-                return df[schema]
-        except pd.errors.EmptyDataError:
-            pass
-    df = pd.DataFrame(columns=schema)
-    save_data(df, path)
-    return df
-
-
-def save_data(df: pd.DataFrame, path: str) -> None:
-    """Write *df* to CSV.  Datetime columns are converted to ISO strings."""
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
+def df_to_storage(df: pd.DataFrame) -> list[dict]:
+    """Serialize a DataFrame to a JSON-safe list of records."""
     out = df.copy()
     for col in out.columns:
         if pd.api.types.is_datetime64_any_dtype(out[col]):
             out[col] = out[col].dt.strftime("%Y-%m-%d").fillna("")
-    out.to_csv(path, index=False)
+    return out.to_dict("records")
+
+
+def df_from_storage(records: list[dict] | None, schema: list[str]) -> pd.DataFrame:
+    """Deserialize records from localStorage into a DataFrame aligned to schema."""
+    if not records:
+        return pd.DataFrame(columns=schema)
+    df = pd.DataFrame(records)
+    for col in schema:
+        if col not in df.columns:
+            df[col] = ""
+    return df[schema]
 
 
 # ---------------------------------------------------------------------------
