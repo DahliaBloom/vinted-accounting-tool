@@ -562,7 +562,7 @@ def render(storage: object) -> None:
         [":material/show_chart: Time Series",
          ":material/bar_chart: Breakdowns",
          ":material/compare_arrows: Comparisons"],
-        key="fin_chart_tabs",
+        on_change="rerun", key="fin_chart_tabs",
     )
 
     with chart_ts:

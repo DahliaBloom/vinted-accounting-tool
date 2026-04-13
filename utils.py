@@ -139,6 +139,8 @@ def has_changed(
 
 def coerce_items(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
+    for col in ("brand", "type", "style", "grade", "origin", "supplier", "status"):
+        df[col] = df[col].fillna("").astype(str)
     for col in ("purchase_price", "sale_price", "push_cost"):
         df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
     for col in ("markup", "profit", "roi"):

@@ -57,6 +57,8 @@ def _inventory_editor(
     for dc in DATE_COLS_ITEMS:
         display[dc] = pd.to_datetime(display[dc], errors="coerce")
 
+    _explored = dataframe_explorer(display, case=False)
+
     col_order = [
         "sku", "status", "brand", "type", "style", "grade",
         "origin", "supplier", "purchase_price", "sale_price",
@@ -65,7 +67,7 @@ def _inventory_editor(
     ]
 
     edited = st.data_editor(
-        dataframe_explorer(display, case=False), key=editor_key, hide_index=True,
+        _explored, key=editor_key, hide_index=True,
         num_rows="dynamic", width="stretch",
         column_order=col_order,
         column_config={
@@ -195,40 +197,47 @@ def render(storage: object) -> None:  # noqa: C901
     (
         sub_all, sub_shipping, sub_pending,
         sub_listed, sub_sold, sub_cancelled, sub_orders,
-    ) = st.tabs([*tab_labels, ":material/package_2: Orders"], key="inv_subtabs")
+    ) = st.tabs([*tab_labels, ":material/package_2: Orders"], on_change="rerun", key="inv_subtabs")
 
     with sub_all:
-        _inventory_editor(sort_items_default(items_df), "inv_all", storage)
+        if sub_all.open:
+            _inventory_editor(sort_items_default(items_df), "inv_all", storage)
 
     with sub_shipping:
-        _inventory_editor(
-            sort_items_default(items_df[items_df["status"] == "In Shipping"]),
-            "inv_shipping", storage,
-        )
+        if sub_shipping.open:
+            _inventory_editor(
+                sort_items_default(items_df[items_df["status"] == "In Shipping"]),
+                "inv_shipping", storage,
+            )
 
     with sub_pending:
-        _inventory_editor(
-            sort_items_default(items_df[items_df["status"] == "Pending"]),
-            "inv_pending", storage,
-        )
+        if sub_pending.open:
+            _inventory_editor(
+                sort_items_default(items_df[items_df["status"] == "Pending"]),
+                "inv_pending", storage,
+            )
 
     with sub_listed:
-        _inventory_editor(
-            sort_items_default(items_df[items_df["status"] == "Listed"]),
-            "inv_listed", storage,
-        )
+        if sub_listed.open:
+            _inventory_editor(
+                sort_items_default(items_df[items_df["status"] == "Listed"]),
+                "inv_listed", storage,
+            )
 
     with sub_sold:
-        _inventory_editor(
-            sort_items_default(items_df[items_df["status"] == "Sold"]),
-            "inv_sold", storage,
-        )
+        if sub_sold.open:
+            _inventory_editor(
+                sort_items_default(items_df[items_df["status"] == "Sold"]),
+                "inv_sold", storage,
+            )
 
     with sub_cancelled:
-        _inventory_editor(
-            sort_items_default(items_df[items_df["status"] == "Cancelled"]),
-            "inv_cancelled", storage,
-        )
+        if sub_cancelled.open:
+            _inventory_editor(
+                sort_items_default(items_df[items_df["status"] == "Cancelled"]),
+                "inv_cancelled", storage,
+            )
 
     with sub_orders:
-        _render_orders(items_df)
+        if sub_orders.open:
+            _render_orders(items_df)

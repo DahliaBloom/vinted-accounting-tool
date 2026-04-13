@@ -6,7 +6,23 @@ import pandas as pd
 import streamlit as st
 
 from ui import ACCENT, TEAL, accent_bar
-from utils import CATEGORY_LABELS, CONFIG_KEY, df_to_storage, get_config_options
+from utils import (
+    CATEGORY_LABELS,
+    CONFIG_KEY,
+    ITEMS_KEY,
+    ITEMS_SCHEMA,
+    ORDERS_KEY,
+    ORDERS_SCHEMA,
+    OVERHEAD_KEY,
+    OVERHEAD_SCHEMA,
+    CONFIG_SCHEMA,
+    coerce_items,
+    coerce_orders,
+    coerce_overhead,
+    df_from_storage,
+    df_to_storage,
+    get_config_options,
+)
 
 
 def render(storage: object) -> None:
@@ -74,3 +90,39 @@ def render(storage: object) -> None:
                                 )
                                 storage[CONFIG_KEY] = df_to_storage(st.session_state.config_df)  # type: ignore[index]
                                 st.rerun()
+
+    # ── Danger zone ──────────────────────────────────────────────────────────
+    st.markdown("---")
+    with st.container(border=True):
+        st.markdown("#### :material/warning: Danger Zone")
+        st.caption(
+            "Permanently deletes **all** items, orders, overhead entries, and lookup "
+            "values stored in your browser. This cannot be undone."
+        )
+
+        if not st.session_state.get("_confirm_clear"):
+            if st.button(
+                ":material/delete_forever: Clear All Data",
+                type="secondary",
+                key="clear_data_btn",
+            ):
+                st.session_state["_confirm_clear"] = True
+                st.rerun()
+        else:
+            st.warning("Are you sure? All data will be permanently deleted.")
+            cc1, cc2 = st.columns(2)
+            if cc1.button(
+                ":material/delete_forever: Yes, delete everything",
+                type="primary",
+                key="clear_data_confirm",
+                width="stretch",
+            ):
+                for key in (ITEMS_KEY, ORDERS_KEY, OVERHEAD_KEY, CONFIG_KEY):
+                    storage[key] = []  # type: ignore[index]
+                for ss_key in ("items_df", "orders_df", "overhead_df", "config_df"):
+                    del st.session_state[ss_key]
+                st.session_state.pop("_confirm_clear", None)
+                st.rerun()
+            if cc2.button("Cancel", key="clear_data_cancel", width="stretch"):
+                st.session_state.pop("_confirm_clear", None)
+                st.rerun()
