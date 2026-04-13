@@ -28,6 +28,19 @@ _TAB_ADD_ITEM  = ":material/add_circle: Add Item"
 _TAB_ADD_ORDER = ":material/shopping_cart: Add Order"
 
 
+def _request_add_item() -> None:
+    """on_click callback: runs in Streamlit's callback phase, before the script body.
+    At that point st.tabs() has not yet been called, so main_tabs is not yet
+    widget-owned and can be set freely.
+    """
+    st.session_state.main_tabs = _TAB_ADD_ITEM
+
+
+def _request_add_order() -> None:
+    """on_click callback: same as above for the Add Order tab."""
+    st.session_state.main_tabs = _TAB_ADD_ORDER
+
+
 def _inventory_editor(
     subset_df: pd.DataFrame,
     editor_key: str,
@@ -161,12 +174,14 @@ def render(storage: object) -> None:  # noqa: C901
             st.markdown("### Welcome to your Vinted Tracker")
             st.caption("No items yet. Add your first item individually or create an order to get started.")
             ec1, ec2 = st.columns(2)
-            if ec1.button(":material/add_circle: Add Item", type="primary", width="stretch"):
-                st.session_state.main_tabs = _TAB_ADD_ITEM
-                st.rerun()
-            if ec2.button(":material/shopping_cart: Add Order", width="stretch"):
-                st.session_state.main_tabs = _TAB_ADD_ORDER
-                st.rerun()
+            ec1.button(
+                ":material/add_circle: Add Item", type="primary", width="stretch",
+                on_click=_request_add_item,
+            )
+            ec2.button(
+                ":material/shopping_cart: Add Order", width="stretch",
+                on_click=_request_add_order,
+            )
         return
 
     # Build sub-tab labels with live counts from STATUS_BADGE
@@ -180,7 +195,7 @@ def render(storage: object) -> None:  # noqa: C901
     (
         sub_all, sub_shipping, sub_pending,
         sub_listed, sub_sold, sub_cancelled, sub_orders,
-    ) = st.tabs([*tab_labels, ":material/package_2: Orders"], on_change="rerun", key="inv_subtabs")
+    ) = st.tabs([*tab_labels, ":material/package_2: Orders"], key="inv_subtabs")
 
     with sub_all:
         _inventory_editor(sort_items_default(items_df), "inv_all", storage)
