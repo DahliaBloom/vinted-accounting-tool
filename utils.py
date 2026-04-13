@@ -1,8 +1,21 @@
 """Data loading, saving, computation, and automation for the Vinted Tracker."""
 
-import pandas as pd
-import numpy as np
+from __future__ import annotations
+
 from datetime import date
+from typing import Any
+
+import numpy as np
+import pandas as pd
+
+# ---------------------------------------------------------------------------
+# localStorage storage keys — single source of truth shared by all views
+# ---------------------------------------------------------------------------
+
+ITEMS_KEY    = "items"
+ORDERS_KEY   = "orders"
+OVERHEAD_KEY = "overhead"
+CONFIG_KEY   = "config"
 
 # ---------------------------------------------------------------------------
 # Schemas (column order is the canonical CSV column order)
@@ -31,23 +44,54 @@ STATUS_SORT = {
     "In Shipping": 0, "Pending": 1, "Listed": 2, "Sold": 3, "Cancelled": 4,
 }
 
-STATUS_BADGE = {
-    "All Items": ("blue",    ":material/inventory_2:"),
-    "In Shipping": ("blue",    ":material/local_shipping:"),
-    "Pending":     ("orange",  ":material/deployed_code_history:"),
-    "Listed":      ("primary", ":material/sell:"),
-    "Sold":        ("green",   ":material/check_circle:"),
-    "Cancelled":   ("gray",    ":material/cancel:"),
-}
-
 CATEGORY_LABELS = ["brand", "type", "style", "origin", "supplier"]
 
 # ---------------------------------------------------------------------------
-# Load / Save (localStorage)
+# Sentinel / sort constants
+# ---------------------------------------------------------------------------
+
+# Sentinel value stored in order_id when an item has no associated order.
+NO_ORDER_SENTINEL: int = -1
+
+# Priority assigned to statuses not found in STATUS_SORT (sorts them last).
+UNKNOWN_STATUS_PRIORITY: int = 5
+
+# Temporary sort value that pushes "no order" items to the end of the list.
+SORT_SENTINEL: int = 999_999
+
+# ---------------------------------------------------------------------------
+# Date serialization helpers
 # ---------------------------------------------------------------------------
 
 
-def df_to_storage(df: pd.DataFrame) -> list[dict]:
+def _to_iso(val: object) -> str:
+    """Convert *val* to an ISO date string, or return '' if not convertible."""
+    try:
+        if val is None or pd.isna(val):  # type: ignore[arg-type]
+            return ""
+    except (ValueError, TypeError):
+        pass
+    if hasattr(val, "isoformat"):
+        return val.isoformat()[:10]  # type: ignore[union-attr]
+    s = str(val).strip()
+    return "" if s in ("", "NaT", "nan", "None") else s
+
+
+def norm_dates(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize all DATE_COLS_ITEMS columns to ISO strings (or empty string)."""
+    df = df.copy()
+    for c in DATE_COLS_ITEMS:
+        if c in df.columns:
+            df[c] = df[c].apply(_to_iso)
+    return df
+
+
+# ---------------------------------------------------------------------------
+# Load / Save (serialization helpers — callers own the actual storage I/O)
+# ---------------------------------------------------------------------------
+
+
+def df_to_storage(df: pd.DataFrame) -> list[dict[str, Any]]:
     """Serialize a DataFrame to a JSON-safe list of records."""
     out = df.copy()
     for col in out.columns:
@@ -67,6 +111,27 @@ def df_from_storage(records: list[dict] | None, schema: list[str]) -> pd.DataFra
     return df[schema]
 
 
+def has_changed(
+    before: pd.DataFrame,
+    after: pd.DataFrame,
+    sort_col: str | None = None,
+) -> bool:
+    """Return True if *after* differs from *before*.
+
+    Uses ``DataFrame.equals()`` which treats NaN == NaN as True, preventing
+    false positives when markup/profit/roi are NaN for unsold items.
+    Using ``df_to_storage()`` for this comparison is incorrect: each
+    ``.to_dict("records")`` call creates new numpy scalar NaN objects that
+    never compare equal via ``==``, causing spurious "changed" detections.
+    """
+    if before.shape != after.shape:
+        return True
+    if sort_col:
+        before = before.sort_values(sort_col).reset_index(drop=True)
+        after = after.sort_values(sort_col).reset_index(drop=True)
+    return not before.equals(after)
+
+
 # ---------------------------------------------------------------------------
 # Type coercion  (CSV stores everything as strings – coerce after loading)
 # ---------------------------------------------------------------------------
@@ -79,7 +144,11 @@ def coerce_items(df: pd.DataFrame) -> pd.DataFrame:
     for col in ("markup", "profit", "roi"):
         df[col] = pd.to_numeric(df[col], errors="coerce")
     df["sku"] = pd.to_numeric(df["sku"], errors="coerce").fillna(0).astype(int)
-    df["order_id"] = pd.to_numeric(df["order_id"], errors="coerce").fillna(-1).astype(int)
+    df["order_id"] = (
+        pd.to_numeric(df["order_id"], errors="coerce")
+        .fillna(NO_ORDER_SENTINEL)
+        .astype(int)
+    )
     return df
 
 
@@ -99,22 +168,37 @@ def coerce_overhead(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
+# Safe coercion helpers
+# ---------------------------------------------------------------------------
+
+
+def _safe_float(val: object, default: float = 0.0) -> float:
+    """Convert *val* to float, returning *default* on any conversion failure."""
+    try:
+        return float(val) if val is not None else default  # type: ignore[arg-type]
+    except (ValueError, TypeError):
+        return default
+
+
+# ---------------------------------------------------------------------------
 # Auto-increment helpers
 # ---------------------------------------------------------------------------
 
 
-def next_sku(items_df: pd.DataFrame) -> int:
-    if items_df.empty:
+def _next_id(df: pd.DataFrame, col: str) -> int:
+    """Return the next available integer ID for *col* in *df*."""
+    if df.empty:
         return 1
-    vals = pd.to_numeric(items_df["sku"], errors="coerce").dropna()
+    vals = pd.to_numeric(df[col], errors="coerce").dropna()
     return int(vals.max()) + 1 if len(vals) > 0 else 1
+
+
+def next_sku(items_df: pd.DataFrame) -> int:
+    return _next_id(items_df, "sku")
 
 
 def next_order_id(orders_df: pd.DataFrame) -> int:
-    if orders_df.empty:
-        return 1
-    vals = pd.to_numeric(orders_df["order_id"], errors="coerce").dropna()
-    return int(vals.max()) + 1 if len(vals) > 0 else 1
+    return _next_id(orders_df, "order_id")
 
 
 # ---------------------------------------------------------------------------
@@ -138,7 +222,7 @@ def compute_derived(items_df: pd.DataFrame) -> pd.DataFrame:
 
     today = pd.Timestamp.today().normalize()
 
-    def _tracker(row):
+    def _tracker(row: pd.Series) -> str:
         raw = row.get("listed_on", "")
         if not raw or str(raw).strip() in ("", "NaT", "nan", "None"):
             return ""
@@ -165,12 +249,12 @@ def compute_derived(items_df: pd.DataFrame) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 
-def apply_automation(row: dict) -> dict:
+def apply_automation(row: dict[str, Any]) -> dict[str, Any]:
     """Enforce status-date-profit rules on a single item row dict."""
     today_str = date.today().isoformat()
-    sp = float(row.get("sale_price") or 0)
-    pp = float(row.get("purchase_price") or 0)
-    pc = float(row.get("push_cost") or 0)
+    sp = _safe_float(row.get("sale_price"))
+    pp = _safe_float(row.get("purchase_price"))
+    pc = _safe_float(row.get("push_cost"))
     status = str(row.get("status", ""))
 
     if sp > 0 and status not in ("Sold", "Cancelled"):
@@ -231,7 +315,9 @@ def explode_pipe_col(df: pd.DataFrame, col: str) -> pd.DataFrame:
 def sort_items_default(df: pd.DataFrame) -> pd.DataFrame:
     """Sort by status priority → order_id → sku (the canonical default)."""
     out = df.copy()
-    out["_so"] = out["status"].map(STATUS_SORT).fillna(5)
-    out["_oid"] = out["order_id"].replace(-1, 999_999)
-    out = out.sort_values(["_so", "_oid", "sku"]).drop(columns=["_so", "_oid"])
+    out["_status_priority"] = out["status"].map(STATUS_SORT).fillna(UNKNOWN_STATUS_PRIORITY)
+    out["_order_id_sort"] = out["order_id"].replace(NO_ORDER_SENTINEL, SORT_SENTINEL)
+    out = out.sort_values(["_status_priority", "_order_id_sort", "sku"]).drop(
+        columns=["_status_priority", "_order_id_sort"]
+    )
     return out.reset_index(drop=True)
